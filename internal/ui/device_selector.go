@@ -710,16 +710,19 @@ func (a *App) createDetailedResultView(result DeviceGroupResult) tview.Primitive
 	if len(result.WalkedOidData) == 0 {
 		content.WriteString("  [grey]No OID data walked or available.\n")
 	} else {
-		for oidName, walkMap := range result.WalkedOidData {
+		for oidName, dataMap := range result.WalkedOidData {
 			content.WriteString(fmt.Sprintf("  [cyan]OID Name: %s[white]\n", oidName))
-			if errVal, isErr := walkMap["error"]; isErr {
+			if errVal, isErr := dataMap["error"]; isErr {
 				content.WriteString(fmt.Sprintf("    [red]Error: %v[white]\n", errVal))
-			} else if len(walkMap) == 0 {
-				content.WriteString("    [grey]No data retrieved for this OID.\n")
+			} else if retrievedOid, ok := dataMap["retrieved_oid"]; ok {
+				value := dataMap["value_raw"] // Using value_raw for direct display
+				valueType := dataMap["type"]
+				content.WriteString(fmt.Sprintf("    Retrieved OID: %s\n", retrievedOid))
+				content.WriteString(fmt.Sprintf("    Type: %s\n", valueType))
+				content.WriteString(fmt.Sprintf("    Value: %v\n", value))
 			} else {
-				for instance, value := range walkMap {
-					content.WriteString(fmt.Sprintf("    %s = %v\n", instance, value))
-				}
+				// Should ideally not happen if no error, but as a fallback:
+				content.WriteString("    [grey]No data or unexpected format for this OID Name.\n")
 			}
 		}
 	}

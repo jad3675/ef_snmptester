@@ -306,38 +306,190 @@ func (c *Client) WalkOIDs(oids map[string]string) (map[string]map[string]interfa
 	return results, nil
 }
 
-// TestGroupOIDs tests a set of OIDs for a device group
-func (c *Client) TestGroupOIDs(oids map[string]string) (*model.TestResult, error) {
+// TestGroupOIDs tests a set of OID Names for a device group by attempting to GetNext on each.
+func (c *Client) TestGroupOIDs(oidNameMap map[string]string) (*model.TestResult, error) {
 	result := model.NewTestResult(c.Device.Name, c.Device.IP, c.Device.SourceFile, model.GroupTest)
 	result.Status = model.Running
-	
-	walkResults, err := c.WalkOIDs(oids)
+
+	// Use GetFirstEntryForOidNames instead of WalkOIDs
+	retrievedOidData, err := c.GetFirstEntryForOidNames(oidNameMap)
 	if err != nil {
-		result.Failure("Failed to walk OIDs", err)
+		// This error from GetFirstEntryForOidNames is currently always nil,
+		// but good practice to check.
+		result.Failure("Failed to perform GetNext operations for OID names", err)
 		return result, err
 	}
-	
-	// Count successful OIDs
-	successful := 0
-	for _, results := range walkResults {
-		if _, ok := results["error"]; !ok && len(results) > 0 {
-			successful++
+
+	// Count successful GetNext operations (i.e., OID names that returned a value)
+	successfulOidNameCount := 0
+	for _, dataMap := range retrievedOidData {
+		// A successful GetNext for an OID Name means no "error" key in its specific map.
+		if _, hasError := dataMap["error"]; !hasError {
+			// And it should have retrieved a value.
+			if _, hasValue := dataMap["value_raw"]; hasValue {
+				successfulOidNameCount++
+			}
 		}
 	}
-	
-	if successful == 0 {
-		result.Failure(fmt.Sprintf("Failed to retrieve any of the %d OIDs", len(oids)), nil)
-	} else if successful < len(oids) {
-		result.Success(fmt.Sprintf("Successfully retrieved %d of %d OIDs", successful, len(oids)))
+
+	totalOidNames := len(oidNameMap)
+	if successfulOidNameCount == 0 {
+		result.Failure(fmt.Sprintf("Failed to retrieve any first entry for the %d OID names", totalOidNames), nil)
+	} else if successfulOidNameCount < totalOidNames {
+		result.Success(fmt.Sprintf("Successfully retrieved first entry for %d of %d OID names", successfulOidNameCount, totalOidNames))
 	} else {
-		result.Success(fmt.Sprintf("Successfully retrieved all %d OIDs", len(oids)))
+		result.Success(fmt.Sprintf("Successfully retrieved first entry for all %d OID names", totalOidNames))
 	}
-	
+
 	// Store summary in result data
-	result.Data["total_oids"] = fmt.Sprintf("%d", len(oids))
-	result.Data["successful_oids"] = fmt.Sprintf("%d", successful)
-	result.Data["failed_oids"] = fmt.Sprintf("%d", len(oids)-successful)
-	result.WalkedOidData = walkResults // Store the detailed walk results
-	
+	result.Data["total_oids"] = fmt.Sprintf("%d", totalOidNames) // Represents total OID Names
+	result.Data["successful_oids"] = fmt.Sprintf("%d", successfulOidNameCount) // Represents successful OID Name GetNexts
+	result.Data["failed_oids"] = fmt.Sprintf("%d", totalOidNames-successfulOidNameCount)
+	result.WalkedOidData = retrievedOidData // Store the detailed GetNext results
+
 	return result, nil
+}
+
+// getFirstEntryParallel performs an SNMP GetNext for a single OID.
+// It's designed to be run in a goroutine.
+func (c *Client) getFirstEntryParallel(oidName, oid string, wg *sync.WaitGroup, results map[string]map[string]interface{}, resultsMutex *sync.Mutex, failureChan chan<- bool) {
+	defer wg.Done()
+
+	localResult := make(map[string]interface{})
+
+	// Create a new client specific to this goroutine
+	newClient, err := NewClient(c.Device)
+	if err != nil {
+		localResult["error"] = fmt.Sprintf("Failed to create SNMP client: %s", err)
+		resultsMutex.Lock()
+		results[oidName] = localResult
+		resultsMutex.Unlock()
+		failureChan <- true
+		return
+	}
+
+	if err := newClient.Connect(); err != nil {
+		localResult["error"] = fmt.Sprintf("Connection failed: %s", err)
+		resultsMutex.Lock()
+		results[oidName] = localResult
+		resultsMutex.Unlock()
+		failureChan <- true
+		return
+	}
+	defer newClient.Close()
+
+	// Perform GetNext operation for the given OID
+	// We expect only one variable in the response for a GetNext on a base OID.
+	pdu, err := newClient.client.GetNext([]string{oid})
+	if err != nil {
+		localResult["error"] = err.Error()
+		failureChan <- true
+	} else if pdu == nil || len(pdu.Variables) == 0 {
+		localResult["error"] = "No response or empty PDU received"
+		failureChan <- true
+	} else if pdu.Variables[0].Type == gosnmp.NoSuchObject || pdu.Variables[0].Type == gosnmp.NoSuchInstance || pdu.Variables[0].Type == gosnmp.EndOfMibView {
+		localResult["error"] = fmt.Sprintf("OID not found or end of MIB view: %s", pdu.Variables[0].Type.String())
+		// This is a valid SNMP response indicating the OID doesn't exist as specified,
+		// but for our purpose of "does this MIB respond", it's a failure to get a value.
+		failureChan <- true
+	} else {
+		// Successfully retrieved an entry
+		retrievedPDU := pdu.Variables[0]
+		localResult["retrieved_oid"] = retrievedPDU.Name
+		localResult["type"] = retrievedPDU.Type.String()
+		localResult["value"] = gosnmp.ToBigInt(retrievedPDU.Value) // Convert to a common format if possible, or keep as is
+		// For simplicity, store raw value. Display formatting can handle type.
+		localResult["value_raw"] = retrievedPDU.Value
+		failureChan <- false // Success
+	}
+
+	resultsMutex.Lock()
+	results[oidName] = localResult
+	resultsMutex.Unlock()
+}
+
+// GetFirstEntryForOidNames performs SNMP GetNext operations for a list of OID names in parallel.
+// This is used to quickly check if a MIB/OID prefix is responsive by fetching the first entry.
+func (c *Client) GetFirstEntryForOidNames(oids map[string]string) (map[string]map[string]interface{}, error) {
+	results := make(map[string]map[string]interface{})
+	resultsMutex := &sync.Mutex{}
+
+	maxConcurrent := c.Device.MaxConcurrentPolls
+	if maxConcurrent <= 0 {
+		maxConcurrent = 5 // Default concurrency
+	}
+	sem := make(chan struct{}, maxConcurrent)
+	var wg sync.WaitGroup
+	failureChan := make(chan bool, len(oids)) // To track if individual GetNext operations fail
+	processedOidsInBatch := 0
+	
+	// Re-introduce early abort logic
+	var consecutiveFailures int
+	var skipRemaining = false
+	var processedOIDsTotal = 0
+
+
+	for oidName, oid := range oids {
+		processedOIDsTotal++
+		if skipRemaining {
+			resultsMutex.Lock()
+			results[oidName] = map[string]interface{}{
+				"error": "Early abort: device appears to be unreachable or unresponsive to this group's OIDs",
+			}
+			resultsMutex.Unlock()
+			// We still need to send a value to failureChan to unblock the batch processing logic later,
+			// or adjust the batch processing logic. For simplicity, let's assume these don't count towards batch processing.
+			// Or, more simply, just continue and don't launch a goroutine.
+			// The wg.Wait() will still wait for actual launched goroutines.
+			continue
+		}
+
+		sem <- struct{}{}
+		wg.Add(1)
+		processedOidsInBatch++
+		go func(name, id string) {
+			defer func() { <-sem }()
+			c.getFirstEntryParallel(name, id, &wg, results, resultsMutex, failureChan)
+		}(oidName, oid)
+
+		// Check failure count after each batch completes or at the end
+		// This logic is similar to the one in WalkOIDs
+		if processedOidsInBatch == maxConcurrent || processedOIDsTotal == len(oids) {
+			// Wait for the current batch of launched goroutines to report to failureChan
+			for i := 0; i < processedOidsInBatch; i++ {
+				isFailure := <-failureChan
+				if isFailure {
+					consecutiveFailures++
+				} else {
+					consecutiveFailures = 0 // Reset on any success
+				}
+			}
+			processedOidsInBatch = 0 // Reset for next batch
+
+			if consecutiveFailures >= 5 { // Threshold for aborting
+				skipRemaining = true
+			}
+		}
+	}
+
+	wg.Wait()
+	// Ensure any remaining failureChan messages from the last partial batch are drained
+	// if the loop finished before a full batch was processed.
+	// This happens if total OIDs is not a multiple of maxConcurrent.
+	for i := 0; i < processedOidsInBatch; i++ {
+		isFailure := <-failureChan
+		if isFailure {
+			consecutiveFailures++
+		} else {
+			consecutiveFailures = 0
+		}
+		// No need to check skipRemaining here again as all goroutines have been launched or skipped.
+	}
+	close(failureChan)
+
+
+	// Check overall status - not strictly necessary to return an error here
+	// as individual errors are in the results map.
+	// For now, return nil error, and let caller inspect individual results.
+	return results, nil
 }

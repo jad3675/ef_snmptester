@@ -247,49 +247,48 @@ func (a *App) runGroupTest(
 		return
 	}
 	
-	// Walk OIDs
-	walkResults, err := client.WalkOIDs(oids)
+	// Test OID Names using GetNext
+	testResult, err := client.TestGroupOIDs(oids) // This now uses GetNext internally
 	if err != nil {
 		a.app.QueueUpdateDraw(func() {
-			statusText.SetText(fmt.Sprintf("[red]Error walking OIDs: %s", err))
+			statusText.SetText(fmt.Sprintf("[red]Error testing OID group: %s", err))
 			*testing = false
 		})
 		return
 	}
+
+	// Store results (WalkedOidData from testResult contains the GetNext results)
+	*results = testResult.WalkedOidData
 	
-	// Store results
-	*results = walkResults
-	
-	// Count successful OIDs
-	successful := 0
-	for _, resultMap := range walkResults {
-		if _, ok := resultMap["error"]; !ok && len(resultMap) > 0 {
-			successful++
-		}
+	// Count successful OID Name retrievals
+	successfulOidNameCount := 0
+	if valStr, ok := testResult.Data["successful_oids"]; ok {
+		fmt.Sscanf(valStr, "%d", &successfulOidNameCount)
 	}
 	
 	// Update the table with results
 	a.app.QueueUpdateDraw(func() {
-		updateGroupTestResults(walkResults, oids, table)
+		// Pass testResult.WalkedOidData to updateGroupTestResults
+		updateGroupTestResults(testResult.WalkedOidData, oids, table)
 		
-		// Update status text
-		statusText.SetText(fmt.Sprintf("Testing complete for %s in group %s. %d of %d OIDs successfully retrieved.",
-			device.Name, groupName, successful, len(oids)))
+		// Update status text (using the message from testResult which is already formatted)
+		statusText.SetText(fmt.Sprintf("Testing complete for %s in group %s. %s.",
+			device.Name, groupName, testResult.Message))
 		
 		*testing = false
 	})
 }
 
-// updateGroupTestResults updates the group test results in the table
+// updateGroupTestResults updates the group test results in the table for GetNext results
 func updateGroupTestResults(
-	results map[string]map[string]interface{},
-	oids map[string]string,
+	getNextResults map[string]map[string]interface{}, // Renamed to reflect new data
+	oidNameMap map[string]string, // Map of OID Name -> OID String
 	table *tview.Table,
 ) {
-	for oidName := range oids {
-		result, ok := results[oidName]
+	for oidName := range oidNameMap {
+		dataMap, ok := getNextResults[oidName]
 		
-		// Find the row for this OID
+		// Find the row for this OID Name
 		var oidRow int
 		for r := 1; r < table.GetRowCount(); r++ {
 			nameCell := table.GetCell(r, 0)
@@ -300,28 +299,31 @@ func updateGroupTestResults(
 		}
 		
 		if oidRow == 0 {
-			continue // OID not found in table
+			continue // OID Name not found in table (should not happen if table populated correctly)
 		}
 		
-		// Update status
+		// Update status cell (column 2)
 		if ok {
-			// Check if there was an error
-			if _, hasError := result["error"]; hasError {
-				table.SetCell(oidRow, 2, tview.NewTableCell("Failed").
+			if errVal, hasError := dataMap["error"]; hasError {
+				// Display the specific error for this OID Name
+				table.SetCell(oidRow, 2, tview.NewTableCell(fmt.Sprintf("Failed: %v", errVal)).
 					SetTextColor(tcell.ColorRed).
 					SetAlign(tview.AlignLeft))
-			} else if len(result) > 0 {
-				table.SetCell(oidRow, 2, tview.NewTableCell(fmt.Sprintf("Success (%d values)", len(result))).
+			} else if _, hasValue := dataMap["value_raw"]; hasValue {
+				// Successfully got a value for this OID Name
+				table.SetCell(oidRow, 2, tview.NewTableCell("Success (1 value)"). // Always 1 value for GetNext
 					SetTextColor(tcell.ColorGreen).
 					SetAlign(tview.AlignLeft))
 			} else {
+				// No error, but no value_raw key (unexpected state)
 				table.SetCell(oidRow, 2, tview.NewTableCell("No Data").
 					SetTextColor(tcell.ColorYellow).
 					SetAlign(tview.AlignLeft))
 			}
 		} else {
-			table.SetCell(oidRow, 2, tview.NewTableCell("Not Found").
-				SetTextColor(tcell.ColorYellow).
+			// OID Name was not in getNextResults map (should not happen if GetFirstEntryForOidNames processes all)
+			table.SetCell(oidRow, 2, tview.NewTableCell("Not Processed").
+				SetTextColor(tcell.ColorDarkGrey).
 				SetAlign(tview.AlignLeft))
 		}
 	}
