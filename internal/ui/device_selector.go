@@ -2,6 +2,7 @@ package ui
 
 import (
 	"encoding/csv"
+	"encoding/json" // Added for JSON export
 	"fmt"
 	"os"
 	"strings"
@@ -689,6 +690,20 @@ func getHomeDir() string {
 	return homeDir
 }
 
+// exportDetailedResultToJSON exports a single DeviceGroupResult to a JSON file.
+func exportDetailedResultToJSON(result DeviceGroupResult, filePath string) error {
+	jsonData, err := json.MarshalIndent(result, "", "  ") // Use MarshalIndent for pretty printing
+	if err != nil {
+		return fmt.Errorf("failed to marshal result to JSON: %w", err)
+	}
+
+	err = os.WriteFile(filePath, jsonData, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to write JSON to file %s: %w", filePath, err)
+	}
+	return nil
+}
+
 // createDetailedResultView creates a new page to display detailed results for a single DeviceGroupResult
 func (a *App) createDetailedResultView(result DeviceGroupResult) tview.Primitive {
 	textView := tview.NewTextView().
@@ -729,17 +744,56 @@ func (a *App) createDetailedResultView(result DeviceGroupResult) tview.Primitive
 
 	textView.SetText(content.String())
 
-	frame := tview.NewFrame(textView).
+	statusLine := tview.NewTextView().
+		SetDynamicColors(true).
+		SetTextAlign(tview.AlignCenter).
+		SetText("[yellow]ESC[white]: Back to Results    [yellow]E[white]: Export to JSON") // Changed J to E
+
+	// Create a Flex layout to hold the main textView and the statusLine
+	contentFlex := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(textView, 0, 1, true). // Main content, grows
+		AddItem(statusLine, 1, 0, false) // Status line, fixed size
+
+	frame := tview.NewFrame(contentFlex). // Frame now wraps the Flex
 		SetBorders(0, 0, 0, 0, 0, 0).
-		AddText(fmt.Sprintf("Detailed Result - %s / %s", result.DeviceName, result.GroupName), true, tview.AlignCenter, tcell.ColorBlue).
-		AddText("ESC: Back to Results", false, tview.AlignCenter, tcell.ColorWhite)
+		AddText(fmt.Sprintf("Detailed Result - %s / %s", result.DeviceName, result.GroupName), true, tview.AlignCenter, tcell.ColorBlue)
+		// The footer text is now managed by statusLine within contentFlex
 
 	frame.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if event.Key() == tcell.KeyEscape {
-			a.pages.SwitchToPage("all_devices_results") // Assuming this is the name of the results page
-			a.pages.RemovePage("detailed_result_view")  // Clean up the page
+		switch event.Key() {
+		case tcell.KeyEscape:
+			a.pages.SwitchToPage("all_devices_results")
+			a.pages.RemovePage("detailed_result_view")
 			return nil
+		case tcell.KeyRune:
+			if event.Rune() == 'e' || event.Rune() == 'E' { // Changed 'j'/'J' to 'e'/'E'
+				// Generate file path
+				fileName := fmt.Sprintf("detailed_result_%s_%s_%s.json",
+					strings.ReplaceAll(result.DeviceName, " ", "_"),
+					strings.ReplaceAll(result.GroupName, " ", "_"),
+					time.Now().Format("20060102_150405"))
+				filePath := fmt.Sprintf("%s/%s", getHomeDir(), fileName)
+
+				// originalStatus := statusLine.GetText(false) // Removed as it was unused
+				statusLine.SetText("[yellow]Exporting to JSON...")
+
+				go func() {
+					err := exportDetailedResultToJSON(result, filePath)
+					a.app.QueueUpdateDraw(func() {
+						if err != nil {
+							statusLine.SetText(fmt.Sprintf("[red]Export failed: %s (ESC to dismiss)", err))
+						} else {
+							statusLine.SetText(fmt.Sprintf("[green]Exported to: %s (ESC to dismiss)", filePath))
+						}
+					})
+					// After a delay, or on next key press (not ESC), revert status? For now, it stays until ESC.
+				}()
+				return nil
+			}
 		}
+		// Revert status line if it was showing an export message and another key (not ESC) was pressed
+		// This part is a bit tricky with the current setup; might be better to let ESC clear it.
+		// For simplicity, the export status message will persist until ESC is pressed or another export is attempted.
 		return event
 	})
 
