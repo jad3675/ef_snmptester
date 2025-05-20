@@ -39,7 +39,7 @@ func NewDevice(name string) *Device {
 		Version:             "2c",
 		Communities:         []string{"public"},
 		DeviceGroups:        []string{},
-		MaxConcurrentPolls:  1,
+		MaxConcurrentPolls:  4, // Changed default to 4
 		SourceFile:          "",  // Default source file is empty
 	}
 }

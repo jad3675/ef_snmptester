@@ -227,10 +227,11 @@ func (c *Client) WalkOIDs(oids map[string]string) (map[string]map[string]interfa
 	
 	// Determine the maximum concurrent operations based on device config
 	maxConcurrent := c.Device.MaxConcurrentPolls
-	if maxConcurrent <= 0 {
-		// Default to a reasonable number if not specified
-		maxConcurrent = 5
+	if maxConcurrent <= 0 { // If YAML explicitly sets 0 or negative, default to 4
+		maxConcurrent = 4
 	}
+	// If MaxConcurrentPolls was not in YAML, model default (now 4) is used.
+	// If YAML had a positive value, that value is used.
 	
 	// Use a semaphore pattern to limit concurrency
 	sem := make(chan struct{}, maxConcurrent)
@@ -415,9 +416,12 @@ func (c *Client) GetFirstEntryForOidNames(oids map[string]string) (map[string]ma
 	resultsMutex := &sync.Mutex{}
 
 	maxConcurrent := c.Device.MaxConcurrentPolls
-	if maxConcurrent <= 0 {
-		maxConcurrent = 5 // Default concurrency
+	if maxConcurrent <= 0 { // If YAML explicitly sets 0 or negative, default to 4
+		maxConcurrent = 4
 	}
+	// If MaxConcurrentPolls was not in YAML, model default (now 4) is used.
+	// If YAML had a positive value, that value is used.
+	
 	sem := make(chan struct{}, maxConcurrent)
 	var wg sync.WaitGroup
 	failureChan := make(chan bool, len(oids)) // To track if individual GetNext operations fail
