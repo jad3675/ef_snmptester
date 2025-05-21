@@ -729,12 +729,17 @@ func (a *App) createDetailedResultView(result DeviceGroupResult) tview.Primitive
 			content.WriteString(fmt.Sprintf("  [cyan]OID Name: %s[white]\n", oidName))
 			if errVal, isErr := dataMap["error"]; isErr {
 				content.WriteString(fmt.Sprintf("    [red]Error: %v[white]\n", errVal))
+				if durationMs, durOk := dataMap["duration_ms"]; durOk {
+					content.WriteString(fmt.Sprintf("    Query Time: %v ms\n", durationMs))
+				}
 			} else if retrievedOid, ok := dataMap["retrieved_oid"]; ok {
 				value := dataMap["value_raw"] // Using value_raw for direct display
 				valueType := dataMap["type"]
+				durationMs := dataMap["duration_ms"] // Assume it exists if no error and value exists
 				content.WriteString(fmt.Sprintf("    Retrieved OID: %s\n", retrievedOid))
 				content.WriteString(fmt.Sprintf("    Type: %s\n", valueType))
 				content.WriteString(fmt.Sprintf("    Value: %v\n", value))
+				content.WriteString(fmt.Sprintf("    Query Time: %v ms\n", durationMs))
 			} else {
 				// Should ideally not happen if no error, but as a fallback:
 				content.WriteString("    [grey]No data or unexpected format for this OID Name.\n")

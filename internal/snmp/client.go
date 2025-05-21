@@ -380,8 +380,11 @@ func (c *Client) getFirstEntryParallel(oidName, oid string, wg *sync.WaitGroup, 
 	defer newClient.Close()
 
 	// Perform GetNext operation for the given OID
-	// We expect only one variable in the response for a GetNext on a base OID.
+	startTime := time.Now()
 	pdu, err := newClient.client.GetNext([]string{oid})
+	duration := time.Since(startTime)
+	localResult["duration_ms"] = duration.Milliseconds()
+
 	if err != nil {
 		localResult["error"] = err.Error()
 		failureChan <- true
@@ -390,16 +393,11 @@ func (c *Client) getFirstEntryParallel(oidName, oid string, wg *sync.WaitGroup, 
 		failureChan <- true
 	} else if pdu.Variables[0].Type == gosnmp.NoSuchObject || pdu.Variables[0].Type == gosnmp.NoSuchInstance || pdu.Variables[0].Type == gosnmp.EndOfMibView {
 		localResult["error"] = fmt.Sprintf("OID not found or end of MIB view: %s", pdu.Variables[0].Type.String())
-		// This is a valid SNMP response indicating the OID doesn't exist as specified,
-		// but for our purpose of "does this MIB respond", it's a failure to get a value.
 		failureChan <- true
 	} else {
-		// Successfully retrieved an entry
 		retrievedPDU := pdu.Variables[0]
 		localResult["retrieved_oid"] = retrievedPDU.Name
 		localResult["type"] = retrievedPDU.Type.String()
-		localResult["value"] = gosnmp.ToBigInt(retrievedPDU.Value) // Convert to a common format if possible, or keep as is
-		// For simplicity, store raw value. Display formatting can handle type.
 		localResult["value_raw"] = retrievedPDU.Value
 		failureChan <- false // Success
 	}
