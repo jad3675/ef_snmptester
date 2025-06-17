@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jad3675/ef_snmptester/internal/model"
 	"github.com/gosnmp/gosnmp"
+	"github.com/jad3675/ef_snmptester/internal/model"
 )
 
 // Client represents an SNMP client
@@ -26,7 +26,7 @@ func NewClient(device *model.Device) (*Client, error) {
 		if len(device.Communities) == 0 {
 			return nil, fmt.Errorf("no communities defined for SNMPv2c device %s", device.Name)
 		}
-		
+
 		client = &gosnmp.GoSNMP{
 			Target:    device.IP,
 			Port:      uint16(device.Port),
@@ -35,14 +35,14 @@ func NewClient(device *model.Device) (*Client, error) {
 			Timeout:   time.Duration(device.Timeout) * time.Millisecond,
 			Retries:   device.Retries,
 		}
-		
+
 	case "3":
 		if len(device.V3Credentials) == 0 {
 			return nil, fmt.Errorf("no v3 credentials defined for SNMPv3 device %s", device.Name)
 		}
-		
+
 		v3Cred := device.V3Credentials[0]
-		
+
 		// Map authentication protocol (case-insensitive)
 		var authProto gosnmp.SnmpV3AuthProtocol
 		switch strings.ToLower(v3Cred.AuthenticationProtocol) {
@@ -53,25 +53,34 @@ func NewClient(device *model.Device) (*Client, error) {
 		default:
 			return nil, fmt.Errorf("unsupported authentication protocol: %s", v3Cred.AuthenticationProtocol)
 		}
-		
-		// Map privacy protocol (case-insensitive)
+
+		// Determine security level and privacy protocol based on provided credentials
+		var msgFlags gosnmp.SnmpV3MsgFlags
 		var privProto gosnmp.SnmpV3PrivProtocol
-		switch strings.ToLower(v3Cred.PrivacyProtocol) {
-		case "des":
-			privProto = gosnmp.DES
-		case "aes", "aes128":
-			privProto = gosnmp.AES
-		default:
-			return nil, fmt.Errorf("unsupported privacy protocol: %s", v3Cred.PrivacyProtocol)
+
+		// Set privacy protocol only if specified
+		if v3Cred.PrivacyProtocol != "" {
+			switch strings.ToLower(v3Cred.PrivacyProtocol) {
+			case "des":
+				privProto = gosnmp.DES
+			case "aes", "aes128":
+				privProto = gosnmp.AES
+			default:
+				return nil, fmt.Errorf("unsupported privacy protocol: %s", v3Cred.PrivacyProtocol)
+			}
+			msgFlags = gosnmp.AuthPriv // Auth + Privacy
+		} else {
+			privProto = gosnmp.NoPriv
+			msgFlags = gosnmp.AuthNoPriv // Auth only
 		}
-		
+
 		// Create the SNMPv3 client with security parameters
 		client = &gosnmp.GoSNMP{
-			Target:    device.IP,
-			Port:      uint16(device.Port),
-			Version:   gosnmp.Version3,
-			Timeout:   time.Duration(device.Timeout) * time.Millisecond,
-			Retries:   device.Retries,
+			Target:  device.IP,
+			Port:    uint16(device.Port),
+			Version: gosnmp.Version3,
+			Timeout: time.Duration(device.Timeout) * time.Millisecond,
+			Retries: device.Retries,
 			SecurityParameters: &gosnmp.UsmSecurityParameters{
 				UserName:                 v3Cred.Username,
 				AuthenticationProtocol:   authProto,
@@ -79,14 +88,14 @@ func NewClient(device *model.Device) (*Client, error) {
 				PrivacyProtocol:          privProto,
 				PrivacyPassphrase:        v3Cred.PrivacyPassphrase,
 			},
-			SecurityModel: gosnmp.UserSecurityModel, // Explicitly set the security model
-			MsgFlags:      gosnmp.AuthPriv,         // Set security level to AuthPriv (authentication + privacy)
+			SecurityModel: gosnmp.UserSecurityModel,
+			MsgFlags:      msgFlags,
 		}
 
 	default:
 		return nil, fmt.Errorf("unsupported SNMP version: %s", device.Version)
 	}
-	
+
 	return &Client{
 		Device: device,
 		client: client,
@@ -107,14 +116,14 @@ func (c *Client) Close() error {
 func (c *Client) TestConnectivity() (*model.TestResult, error) {
 	result := model.NewTestResult(c.Device.Name, c.Device.IP, c.Device.SourceFile, model.ConnectivityTest)
 	result.Status = model.Running
-	
+
 	// Try to connect to the device
 	if err := c.Connect(); err != nil {
 		result.Failure(fmt.Sprintf("Connection failed: %s", err), err)
 		return result, err
 	}
 	defer c.Close()
-	
+
 	// Get the sysObjectID
 	oid := ".1.3.6.1.2.1.1.2.0" // sysObjectID
 	pdu, err := c.client.Get([]string{oid})
@@ -122,15 +131,15 @@ func (c *Client) TestConnectivity() (*model.TestResult, error) {
 		result.Failure(fmt.Sprintf("Failed to get sysObjectID: %s", err), err)
 		return result, err
 	}
-	
+
 	// Check if we got a valid response
 	foundSysObjectID := false
 	var sysObjectIDValue string
-	
+
 	for _, variable := range pdu.Variables {
 		if variable.Name == oid {
 			foundSysObjectID = true
-			
+
 			// Format the sysObjectID value based on type
 			switch variable.Type {
 			case gosnmp.ObjectIdentifier:
@@ -142,18 +151,18 @@ func (c *Client) TestConnectivity() (*model.TestResult, error) {
 			default:
 				sysObjectIDValue = fmt.Sprintf("%v", variable.Value)
 			}
-			
+
 			result.Data["sysObjectID"] = sysObjectIDValue
 			break
 		}
 	}
-	
+
 	if !foundSysObjectID {
-		result.Failure("Failed to get sysObjectID: OID not found in response", 
+		result.Failure("Failed to get sysObjectID: OID not found in response",
 			fmt.Errorf("OID not found in response"))
 		return result, fmt.Errorf("OID not found in response")
 	}
-	
+
 	// Mark as successful and store sysObjectID in the message
 	result.Success(fmt.Sprintf("sysObjectID: %s", sysObjectIDValue))
 	return result, nil
@@ -162,10 +171,10 @@ func (c *Client) TestConnectivity() (*model.TestResult, error) {
 // walkOIDParallel performs an SNMP walk for a single OID
 func (c *Client) walkOIDParallel(oidName, oid string, wg *sync.WaitGroup, results map[string]map[string]interface{}, resultsMutex *sync.Mutex, failureCountChan chan<- bool) {
 	defer wg.Done()
-	
+
 	// Initialize result for this OID
 	localResults := make(map[string]interface{})
-	
+
 	// Create a new client specific to this goroutine to avoid concurrency issues
 	// with a shared GoSNMP instance
 	newClient, err := NewClient(c.Device)
@@ -178,7 +187,7 @@ func (c *Client) walkOIDParallel(oidName, oid string, wg *sync.WaitGroup, result
 		failureCountChan <- true // Signal a failure
 		return
 	}
-	
+
 	// Connect to the device
 	if err := newClient.Connect(); err != nil {
 		localResults["error"] = fmt.Sprintf("Connection failed: %s", err)
@@ -189,7 +198,7 @@ func (c *Client) walkOIDParallel(oidName, oid string, wg *sync.WaitGroup, result
 		return
 	}
 	defer newClient.Close()
-	
+
 	// Walk the OID
 	err = newClient.client.Walk(oid, func(pdu gosnmp.SnmpPDU) error {
 		// Extract the instance part from the OID
@@ -197,12 +206,12 @@ func (c *Client) walkOIDParallel(oidName, oid string, wg *sync.WaitGroup, result
 		if instance == "" {
 			instance = ".0" // For scalar objects
 		}
-		
+
 		// Store the value with the instance as the key
 		localResults[instance] = pdu.Value
 		return nil
 	})
-	
+
 	if err != nil {
 		localResults["error"] = err.Error()
 		failureCountChan <- true // Signal a failure
@@ -213,7 +222,7 @@ func (c *Client) walkOIDParallel(oidName, oid string, wg *sync.WaitGroup, result
 		// Success with data
 		failureCountChan <- false // No failure
 	}
-	
+
 	// Update the shared results with a mutex
 	resultsMutex.Lock()
 	results[oidName] = localResults
@@ -224,7 +233,7 @@ func (c *Client) walkOIDParallel(oidName, oid string, wg *sync.WaitGroup, result
 func (c *Client) WalkOIDs(oids map[string]string) (map[string]map[string]interface{}, error) {
 	results := make(map[string]map[string]interface{})
 	resultsMutex := &sync.Mutex{} // Mutex for safe concurrent access to results map
-	
+
 	// Determine the maximum concurrent operations based on device config
 	maxConcurrent := c.Device.MaxConcurrentPolls
 	if maxConcurrent <= 0 { // If YAML explicitly sets 0 or negative, default to 4
@@ -232,21 +241,21 @@ func (c *Client) WalkOIDs(oids map[string]string) (map[string]map[string]interfa
 	}
 	// If MaxConcurrentPolls was not in YAML, model default (now 4) is used.
 	// If YAML had a positive value, that value is used.
-	
+
 	// Use a semaphore pattern to limit concurrency
 	sem := make(chan struct{}, maxConcurrent)
-	
+
 	// WaitGroup to track completion of all goroutines
 	var wg sync.WaitGroup
-	
+
 	// Channel to track failure count for early abort
 	failureCountChan := make(chan bool, len(oids))
-	
+
 	// Track OIDs for early abort detection
 	var consecutiveFailures int
 	var processedOIDs = 0
 	var skipRemaining = false
-	
+
 	// Process OIDs
 	for oidName, oid := range oids {
 		// Skip remaining OIDs if we've hit the failure threshold
@@ -259,22 +268,22 @@ func (c *Client) WalkOIDs(oids map[string]string) (map[string]map[string]interfa
 			resultsMutex.Unlock()
 			continue
 		}
-		
+
 		processedOIDs++
-		
+
 		// Acquire semaphore slot (blocks if maxConcurrent goroutines are already running)
 		sem <- struct{}{}
-		
+
 		// Create waitgroup entry
 		wg.Add(1)
-		
+
 		// Start goroutine for this OID
 		go func(oidName, oid string) {
 			defer func() { <-sem }() // Release semaphore slot when done
-			
+
 			c.walkOIDParallel(oidName, oid, &wg, results, resultsMutex, failureCountChan)
 		}(oidName, oid)
-		
+
 		// Check failure count after each batch completes
 		// This helps detect consistent failures early without waiting for all OIDs
 		if processedOIDs%maxConcurrent == 0 || processedOIDs == len(oids) {
@@ -291,7 +300,7 @@ func (c *Client) WalkOIDs(oids map[string]string) (map[string]map[string]interfa
 					// No result yet, continue
 				}
 			}
-			
+
 			// Check if we should abort
 			if consecutiveFailures >= 5 {
 				skipRemaining = true
@@ -300,10 +309,10 @@ func (c *Client) WalkOIDs(oids map[string]string) (map[string]map[string]interfa
 			}
 		}
 	}
-	
+
 	// Wait for all goroutines to complete
 	wg.Wait()
-	
+
 	return results, nil
 }
 
@@ -343,7 +352,7 @@ func (c *Client) TestGroupOIDs(oidNameMap map[string]string) (*model.TestResult,
 	}
 
 	// Store summary in result data
-	result.Data["total_oids"] = fmt.Sprintf("%d", totalOidNames) // Represents total OID Names
+	result.Data["total_oids"] = fmt.Sprintf("%d", totalOidNames)               // Represents total OID Names
 	result.Data["successful_oids"] = fmt.Sprintf("%d", successfulOidNameCount) // Represents successful OID Name GetNexts
 	result.Data["failed_oids"] = fmt.Sprintf("%d", totalOidNames-successfulOidNameCount)
 	result.WalkedOidData = retrievedOidData // Store the detailed GetNext results
@@ -419,17 +428,16 @@ func (c *Client) GetFirstEntryForOidNames(oids map[string]string) (map[string]ma
 	}
 	// If MaxConcurrentPolls was not in YAML, model default (now 4) is used.
 	// If YAML had a positive value, that value is used.
-	
+
 	sem := make(chan struct{}, maxConcurrent)
 	var wg sync.WaitGroup
 	failureChan := make(chan bool, len(oids)) // To track if individual GetNext operations fail
 	processedOidsInBatch := 0
-	
+
 	// Re-introduce early abort logic
 	var consecutiveFailures int
 	var skipRemaining = false
 	var processedOIDsTotal = 0
-
 
 	for oidName, oid := range oids {
 		processedOIDsTotal++
@@ -488,7 +496,6 @@ func (c *Client) GetFirstEntryForOidNames(oids map[string]string) (map[string]ma
 		// No need to check skipRemaining here again as all goroutines have been launched or skipped.
 	}
 	close(failureChan)
-
 
 	// Check overall status - not strictly necessary to return an error here
 	// as individual errors are in the results map.
