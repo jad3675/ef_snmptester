@@ -405,10 +405,18 @@ func (c *Client) getFirstEntryParallel(oidName, oid string, wg *sync.WaitGroup, 
 		failureChan <- true
 	} else {
 		retrievedPDU := pdu.Variables[0]
-		localResult["retrieved_oid"] = retrievedPDU.Name
-		localResult["type"] = retrievedPDU.Type.String()
-		localResult["value_raw"] = retrievedPDU.Value
-		failureChan <- false // Success
+		// Validate that the retrieved OID is actually under the requested OID tree
+		// GetNext can return unrelated OIDs when the requested OID branch has no data
+		requestedPrefix := oid + "."
+		if !strings.HasPrefix(retrievedPDU.Name, requestedPrefix) {
+			localResult["error"] = "No data found for this OID branch"
+			failureChan <- true
+		} else {
+			localResult["retrieved_oid"] = retrievedPDU.Name
+			localResult["type"] = retrievedPDU.Type.String()
+			localResult["value_raw"] = retrievedPDU.Value
+			failureChan <- false // Success
+		}
 	}
 
 	resultsMutex.Lock()
