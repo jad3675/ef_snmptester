@@ -44,34 +44,76 @@ func NewClient(device *model.Device) (*Client, error) {
 		v3Cred := device.V3Credentials[0]
 
 		// Map authentication protocol (case-insensitive)
+		authStr := strings.ToLower(strings.TrimSpace(v3Cred.AuthenticationProtocol))
 		var authProto gosnmp.SnmpV3AuthProtocol
-		switch strings.ToLower(v3Cred.AuthenticationProtocol) {
-		case "sha", "sha1":
-			authProto = gosnmp.SHA
+		var authEnabled bool
+		switch authStr {
+		case "", "noauth", "none":
+			authProto = gosnmp.NoAuth
+			authEnabled = false
 		case "md5":
 			authProto = gosnmp.MD5
+			authEnabled = true
+		case "sha", "sha1":
+			authProto = gosnmp.SHA
+			authEnabled = true
+		case "sha224":
+			authProto = gosnmp.SHA224
+			authEnabled = true
+		case "sha256":
+			authProto = gosnmp.SHA256
+			authEnabled = true
+		case "sha384":
+			authProto = gosnmp.SHA384
+			authEnabled = true
+		case "sha512":
+			authProto = gosnmp.SHA512
+			authEnabled = true
 		default:
 			return nil, fmt.Errorf("unsupported authentication protocol: %s", v3Cred.AuthenticationProtocol)
 		}
 
-		// Determine security level and privacy protocol based on provided credentials
-		var msgFlags gosnmp.SnmpV3MsgFlags
+		// Map privacy protocol (case-insensitive)
+		privStr := strings.ToLower(strings.TrimSpace(v3Cred.PrivacyProtocol))
 		var privProto gosnmp.SnmpV3PrivProtocol
-
-		// Set privacy protocol only if specified
-		if v3Cred.PrivacyProtocol != "" {
-			switch strings.ToLower(v3Cred.PrivacyProtocol) {
-			case "des":
-				privProto = gosnmp.DES
-			case "aes", "aes128":
-				privProto = gosnmp.AES
-			default:
-				return nil, fmt.Errorf("unsupported privacy protocol: %s", v3Cred.PrivacyProtocol)
-			}
-			msgFlags = gosnmp.AuthPriv // Auth + Privacy
-		} else {
+		var privEnabled bool
+		switch privStr {
+		case "", "nopriv", "none":
 			privProto = gosnmp.NoPriv
-			msgFlags = gosnmp.AuthNoPriv // Auth only
+			privEnabled = false
+		case "des":
+			privProto = gosnmp.DES
+			privEnabled = true
+		case "aes", "aes128":
+			privProto = gosnmp.AES
+			privEnabled = true
+		case "aes192":
+			privProto = gosnmp.AES192
+			privEnabled = true
+		case "aes256":
+			privProto = gosnmp.AES256
+			privEnabled = true
+		case "aes192c":
+			privProto = gosnmp.AES192C
+			privEnabled = true
+		case "aes256c":
+			privProto = gosnmp.AES256C
+			privEnabled = true
+		default:
+			return nil, fmt.Errorf("unsupported privacy protocol: %s", v3Cred.PrivacyProtocol)
+		}
+
+		// Validate combination and set message flags
+		var msgFlags gosnmp.SnmpV3MsgFlags
+		switch {
+		case !authEnabled && !privEnabled:
+			msgFlags = gosnmp.NoAuthNoPriv
+		case authEnabled && !privEnabled:
+			msgFlags = gosnmp.AuthNoPriv
+		case authEnabled && privEnabled:
+			msgFlags = gosnmp.AuthPriv
+		case !authEnabled && privEnabled:
+			return nil, fmt.Errorf("privacy protocol %s requires an authentication protocol (not 'noauth')", v3Cred.PrivacyProtocol)
 		}
 
 		// Create the SNMPv3 client with security parameters
